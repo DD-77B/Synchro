@@ -1,0 +1,93 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'synchro.zip'
+      - '.github/workflows/build.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unpack project
+        run: |
+          rm -rf proj && mkdir proj
+          unzip -q synchro.zip -d proj
+          ls -la proj
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install dependencies
+        working-directory: proj
+        run: npm install
+
+      - name: Add Android platform
+        working-directory: proj
+        run: npx cap add android
+
+      - name: Patch manifest (microphone permissions)
+        working-directory: proj
+        run: |
+          F=android/app/src/main/AndroidManifest.xml
+          sed -i 's|<application|<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <application|' "$F"
+          grep -n "uses-permission" "$F"
+
+      - name: Fixed signing key (so updates install over old versions)
+        working-directory: proj
+        run: |
+          cp debug.keystore android/app/debug.keystore
+          cat >> android/app/build.gradle <<'EOF'
+
+          android {
+              signingConfigs {
+                  debug {
+                      storeFile file('debug.keystore')
+                      storePassword 'android'
+                      keyAlias 'androiddebugkey'
+                      keyPassword 'android'
+                  }
+              }
+          }
+          EOF
+
+      - name: Sync web assets
+        working-directory: proj
+        run: npx cap sync android
+
+      - name: Build APK
+        working-directory: proj/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Rename APK
+        run: cp proj/android/app/build/outputs/apk/debug/app-debug.apk Synchro.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Synchro-apk
+          path: Synchro.apk
+
+      - name: Publish to Releases (download link for the phone)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Синхронист (последняя сборка)
+          files: Synchro.apk
+          make_latest: true
+
